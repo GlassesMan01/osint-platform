@@ -22,7 +22,7 @@ async function safeRequest(name, fn) {
   } catch (err) {
     const raw = err.response?.data?.error || err.response?.data?.message || err.response?.data || err.message;
     const msg = typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
-    return { tool: name, status: 'error', data: null, error: `Request failed with status code ${err.response?.status || 'unknown'}: ${msg}` };
+    return { tool: name, status: 'error', data: null, error: `Status ${err.response?.status || 'unknown'}: ${msg}`.substring(0, 200) };
   }
 }
 
@@ -69,39 +69,13 @@ async function queryShodan(domain, ip) {
   });
 }
 
-// 3. SecurityTrails
-async function querySecurityTrails(domain) {
-  const key = process.env.SECURITYTRAILS_API_KEY;
-  if (!key || key === 'your_key_here') return { tool: 'SecurityTrails', status: 'no_key', data: null };
-  return safeRequest('SecurityTrails', async () => {
-    const res = await axios.get(`https://api.securitytrails.com/v1/domain/${domain}`, {
-      headers: { APIKEY: key },
-      timeout: 15000
-    });
-    const rec = res.data.current_dns || {};
-    return {
-      hostname: res.data.hostname || domain,
-      a_records: (rec.a?.values || []).map(v => v.ip).join(', ') || 'N/A',
-      mx_records: (rec.mx?.values || []).map(v => v.hostname).join(', ') || 'N/A',
-      ns_records: (rec.ns?.values || []).map(v => v.nameserver).join(', ') || 'N/A',
-      soa_email: rec.soa?.values?.[0]?.email || 'N/A',
-      alexa_rank: res.data.alexa_rank || 'N/A'
-    };
-  });
-}
-
-// 4. IPinfo
+// 3. IPinfo
 async function queryIPinfo(domain, ip) {
   const key = process.env.IPINFO_API_KEY;
   if (!key || key === 'your_key_here') return { tool: 'IPinfo', status: 'no_key', data: null };
   const targetIP = ip || domain;
   return safeRequest('IPinfo', async () => {
-    let res;
-    try {
-      res = await axios.get(`https://ipinfo.io/${targetIP}?token=${key}`, { timeout: 15000 });
-    } catch {
-      res = await axios.get(`https://ipinfo.io/${targetIP}/json?token=${key}`, { timeout: 15000 });
-    }
+    const res = await axios.get(`https://ipinfo.io/${targetIP}/json?token=${key}`, { timeout: 15000 });
     return {
       ip: res.data.ip || targetIP,
       hostname: res.data.hostname || 'N/A',
@@ -115,7 +89,7 @@ async function queryIPinfo(domain, ip) {
   });
 }
 
-// 5. AbuseIPDB
+// 4. AbuseIPDB
 async function queryAbuseIPDB(ip) {
   const key = process.env.ABUSEIPDB_API_KEY;
   if (!key || key === 'your_key_here') return { tool: 'AbuseIPDB', status: 'no_key', data: null };
@@ -141,63 +115,46 @@ async function queryAbuseIPDB(ip) {
   });
 }
 
-// 6. URLScan.io
+// 5. URLScan.io
 async function queryURLScan(domain) {
   const key = process.env.URLSCAN_API_KEY;
   if (!key || key === 'your_key_here') return { tool: 'URLScan.io', status: 'no_key', data: null };
   return safeRequest('URLScan.io', async () => {
+    const searchRes = await axios.get(`https://urlscan.io/api/v1/search/?q=domain:${domain}&size=1`, {
+      headers: { 'API-Key': key },
+      timeout: 15000
+    });
+    if (searchRes.data.results?.length > 0) {
+      const latest = searchRes.data.results[0];
+      return {
+        url: latest.page?.url || `https://${domain}`,
+        domain: latest.page?.domain || domain,
+        ip: latest.page?.ip || 'N/A',
+        country: latest.page?.country || 'N/A',
+        server: latest.page?.server || 'N/A',
+        title: latest.page?.title || 'N/A',
+        status_code: latest.page?.status || 'N/A',
+        scan_id: latest._id || 'N/A',
+        scan_time: latest.task?.time || 'N/A'
+      };
+    }
     const submitRes = await axios.post('https://urlscan.io/api/v1/scan/', {
-      url: `https://${domain}`,
-      visibility: 'public'
+      url: `https://${domain}`, visibility: 'public'
     }, {
       headers: { 'API-Key': key, 'Content-Type': 'application/json' },
       timeout: 15000
     });
-    const uuid = submitRes.data.uuid;
-    await new Promise(r => setTimeout(r, 12000));
-    const resultRes = await axios.get(`https://urlscan.io/api/v1/result/${uuid}/`, { timeout: 15000 });
-    const page = resultRes.data.page || {};
-    const stats = resultRes.data.stats || {};
     return {
-      url: page.url || `https://${domain}`,
-      domain: page.domain || domain,
-      ip: page.ip || 'N/A',
-      country: page.country || 'N/A',
-      server: page.server || 'N/A',
-      title: page.title || 'N/A',
-      status_code: page.status || 'N/A',
-      tls_issuer: resultRes.data.lists?.certificates?.[0]?.issuer || 'N/A',
-      total_links: stats.totalLinks ?? 'N/A',
-      technologies: (resultRes.data.meta?.processors?.wappa?.data || []).slice(0, 5).map(t => t.app).join(', ') || 'N/A'
+      message: 'Scan submitted',
+      uuid: submitRes.data.uuid || 'N/A',
+      url: submitRes.data.api || 'N/A',
+      visibility: submitRes.data.visibility || 'public',
+      result_url: submitRes.data.result || 'N/A'
     };
   });
 }
 
-// 7. WhoisXML API
-async function queryWhoisXML(domain) {
-  const key = process.env.WHOISXML_API_KEY;
-  if (!key || key === 'your_key_here') return { tool: 'WhoisXML', status: 'no_key', data: null };
-  return safeRequest('WhoisXML', async () => {
-    const res = await axios.get('https://www.whoisxmlapi.com/whoisserver/WhoisService', {
-      params: { apiKey: key, domainName: domain, outputFormat: 'JSON' },
-      timeout: 15000
-    });
-    const rec = res.data.WhoisRecord || {};
-    return {
-      domain_name: rec.domainName || domain,
-      registrar: rec.registrarName || 'N/A',
-      created_date: rec.createdDate || 'N/A',
-      updated_date: rec.updatedDate || 'N/A',
-      expires_date: rec.expiresDate || 'N/A',
-      registrant_country: rec.registrant?.country || 'N/A',
-      registrant_org: rec.registrant?.organization || 'N/A',
-      name_servers: (rec.nameServers?.hostNames || []).join(', ') || 'N/A',
-      status: (rec.status || '').substring(0, 100) || 'N/A'
-    };
-  });
-}
-
-// 8. AlienVault OTX
+// 6. AlienVault OTX
 async function queryAlienVault(domain) {
   const key = process.env.ALIENVAULT_API_KEY;
   if (!key || key === 'your_key_here') return { tool: 'AlienVault OTX', status: 'no_key', data: null };
@@ -225,7 +182,7 @@ async function queryAlienVault(domain) {
   });
 }
 
-// 9. GreyNoise
+// 7. GreyNoise
 async function queryGreyNoise(ip) {
   const key = process.env.GREYNOISE_API_KEY;
   if (!key || key === 'your_key_here') return { tool: 'GreyNoise', status: 'no_key', data: null };
@@ -248,24 +205,147 @@ async function queryGreyNoise(ip) {
   });
 }
 
-// 10. Hunter.io
-async function queryHunter(domain) {
-  const key = process.env.HUNTER_API_KEY;
-  if (!key || key === 'your_key_here') return { tool: 'Hunter.io', status: 'no_key', data: null };
-  return safeRequest('Hunter.io', async () => {
-    const res = await axios.get('https://api.hunter.io/v2/domain-search', {
-      params: { domain, api_key: key },
+// 8. Censys
+async function queryCensys(ip) {
+  const key = process.env.CENSYS_API_KEY;
+  if (!key || key === 'your_key_here') return { tool: 'Censys', status: 'no_key', data: null };
+  if (!ip) return { tool: 'Censys', status: 'error', data: null, error: 'Could not resolve IP' };
+  return safeRequest('Censys', async () => {
+    const res = await axios.get(`https://search.censys.io/api/v2/hosts/${ip}`, {
+      headers: { Authorization: `Bearer ${key}` },
       timeout: 15000
     });
-    const d = res.data.data || {};
+    const host = res.data.result || {};
+    const services = host.services || [];
+    return {
+      ip: host.ip || ip,
+      country: host.location?.country || 'N/A',
+      city: host.location?.city || 'N/A',
+      asn: host.autonomous_system?.asn || 'N/A',
+      as_name: host.autonomous_system?.name || 'N/A',
+      as_description: host.autonomous_system?.description || 'N/A',
+      open_services: services.map(s => `${s.port}/${s.transport_protocol} (${s.service_name || 'unknown'})`).join(', ') || 'N/A',
+      os: host.operating_system?.product || 'N/A',
+      last_updated: host.last_updated_at || 'N/A'
+    };
+  });
+}
+
+// 9. ViewDNS
+async function queryViewDNS(domain) {
+  const key = process.env.VIEWDNS_API_KEY;
+  if (!key || key === 'your_key_here') return { tool: 'ViewDNS', status: 'no_key', data: null };
+  return safeRequest('ViewDNS', async () => {
+    const dnsInfo = await axios.get(`https://api.viewdns.info/dnsrecord/?domain=${domain}&recordtype=ANY&apikey=${key}&output=json`, { timeout: 15000 });
+    const records = dnsInfo.data?.response?.records || [];
+
+    let ipHist = {};
+    try {
+      const histRes = await axios.get(`https://api.viewdns.info/iphistory/?domain=${domain}&apikey=${key}&output=json`, { timeout: 15000 });
+      const recs = histRes.data?.response?.records || [];
+      ipHist = {
+        ip_history: recs.slice(0, 5).map(r => `${r.ip} (${r.lastresolved || 'N/A'})`).join('; ') || 'N/A'
+      };
+    } catch { ipHist = { ip_history: 'N/A' }; }
+
+    return {
+      dns_records: records.slice(0, 8).map(r => `${r.type}: ${r.data} (TTL: ${r.ttl})`).join('; ') || 'N/A',
+      record_count: records.length,
+      a_records: records.filter(r => r.type === 'A').map(r => r.data).join(', ') || 'N/A',
+      mx_records: records.filter(r => r.type === 'MX').map(r => r.data).join(', ') || 'N/A',
+      ns_records: records.filter(r => r.type === 'NS').map(r => r.data).join(', ') || 'N/A',
+      txt_records: records.filter(r => r.type === 'TXT').map(r => r.data).join(', ') || 'N/A',
+      ...ipHist
+    };
+  });
+}
+
+// 10. DNSdumpster
+async function queryDNSdumpster(domain) {
+  const key = process.env.DNSDUMPSTER_API_KEY;
+  if (!key || key === 'your_key_here') return { tool: 'DNSdumpster', status: 'no_key', data: null };
+  return safeRequest('DNSdumpster', async () => {
+    const res = await axios.get(`https://api.dnsdumpster.com/domain/${domain}`, {
+      headers: { 'X-API-Key': key },
+      timeout: 15000
+    });
+    const d = res.data || {};
     return {
       domain: d.domain || domain,
-      organization: d.organization || 'N/A',
-      email_pattern: d.pattern || 'N/A',
-      emails_found: d.emails?.length ?? 0,
-      sample_emails: (d.emails || []).slice(0, 5).map(e => e.value).join(', ') || 'N/A',
-      department_breakdown: d.departments ? Object.entries(d.departments).filter(([,v]) => v > 0).map(([k,v]) => `${k}: ${v}`).join(', ') : 'N/A',
-      technologies: (d.technologies || []).join(', ') || 'N/A'
+      a_records: (d.a || []).slice(0, 5).map(r => `${r.host}: ${r.ip} (${r.provider || 'N/A'})`).join('; ') || 'N/A',
+      mx_records: (d.mx || []).slice(0, 5).map(r => `${r.host} (${r.provider || 'N/A'})`).join('; ') || 'N/A',
+      ns_records: (d.ns || []).slice(0, 5).map(r => `${r.host} (${r.provider || 'N/A'})`).join('; ') || 'N/A',
+      txt_records: (d.txt || []).slice(0, 3).join('; ') || 'N/A',
+      total_subdomains: (d.a || []).length,
+      status: d.status || 'N/A'
+    };
+  });
+}
+
+// 11. Cloudflare Radar (no key needed)
+async function queryCloudflareRadar(domain) {
+  return safeRequest('Cloudflare Radar', async () => {
+    const res = await axios.get(`https://radar.cloudflare.com/api/domains/${domain}`, { timeout: 15000 });
+    const d = res.data || {};
+    return {
+      domain: domain,
+      top_rank: d.rank || 'N/A',
+      category: d.contentCategories?.join(', ') || 'N/A',
+      popularity_rank: d.popularityRank || 'N/A',
+      risk_score: d.riskScore || 'N/A',
+      risk_types: (d.riskTypes || []).join(', ') || 'None',
+      is_probably_safe: d.isProbablySafe ?? 'N/A',
+      content_categories: (d.contentCategories || []).join(', ') || 'N/A'
+    };
+  });
+}
+
+// 12. LeakIX
+async function queryLeakIX(ip) {
+  const key = process.env.LEAKIX_API_KEY;
+  if (!key || key === 'your_key_here') return { tool: 'LeakIX', status: 'no_key', data: null };
+  if (!ip) return { tool: 'LeakIX', status: 'error', data: null, error: 'Could not resolve IP' };
+  return safeRequest('LeakIX', async () => {
+    const res = await axios.get(`https://leakix.net/host/${ip}`, {
+      headers: { 'api-key': key, Accept: 'application/json' },
+      timeout: 15000
+    });
+    const d = res.data || {};
+    const services = d.Services || [];
+    const leaks = d.Leaks || [];
+    return {
+      ip: ip,
+      total_services: services.length,
+      total_leaks: leaks.length,
+      services_found: services.slice(0, 5).map(s => `${s.port}/${s.protocol} - ${s.service?.software?.name || 'unknown'}`).join('; ') || 'None',
+      leaks_summary: leaks.slice(0, 3).map(l => `${l.type_name || 'unknown'} (${l.severity || 'N/A'})`).join('; ') || 'None found',
+      country: services[0]?.geoip?.country_name || 'N/A',
+      asn: services[0]?.network?.asn || 'N/A',
+      organization: services[0]?.network?.organization_name || 'N/A'
+    };
+  });
+}
+
+// 13. Pulsedive
+async function queryPulsedive(domain) {
+  const key = process.env.PULSEDIVE_API_KEY;
+  if (!key || key === 'your_key_here') return { tool: 'Pulsedive', status: 'no_key', data: null };
+  return safeRequest('Pulsedive', async () => {
+    const res = await axios.get('https://pulsedive.com/api/info.php', {
+      params: { indicator: domain, key: key },
+      timeout: 15000
+    });
+    const d = res.data || {};
+    return {
+      indicator: d.indicator || domain,
+      type: d.type || 'N/A',
+      risk: d.risk || 'N/A',
+      risk_recommended: d.risk_recommended || 'N/A',
+      threats: (d.threats || []).slice(0, 5).map(t => t.name || t).join(', ') || 'None',
+      feeds: (d.feeds || []).slice(0, 5).map(f => f.name || f).join(', ') || 'None',
+      technology: (d.attributes?.technology || []).join(', ') || 'N/A',
+      port: (d.attributes?.port || []).join(', ') || 'N/A',
+      protocol: (d.attributes?.protocol || []).join(', ') || 'N/A'
     };
   });
 }
@@ -277,14 +357,17 @@ async function analyzeTarget(target) {
   const results = await Promise.allSettled([
     queryVirusTotal(domain),
     queryShodan(domain, ip),
-    querySecurityTrails(domain),
     queryIPinfo(domain, ip),
     queryAbuseIPDB(ip),
     queryURLScan(domain),
-    queryWhoisXML(domain),
     queryAlienVault(domain),
     queryGreyNoise(ip),
-    queryHunter(domain)
+    queryCensys(ip),
+    queryViewDNS(domain),
+    queryDNSdumpster(domain),
+    queryCloudflareRadar(domain),
+    queryLeakIX(ip),
+    queryPulsedive(domain)
   ]);
 
   return results.map(r => {

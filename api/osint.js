@@ -20,8 +20,9 @@ async function safeRequest(name, fn) {
     const data = await fn();
     return { tool: name, status: 'success', data };
   } catch (err) {
-    const msg = err.response?.data?.error || err.response?.data?.message || err.message;
-    return { tool: name, status: 'error', data: null, error: String(msg) };
+    const raw = err.response?.data?.error || err.response?.data?.message || err.response?.data || err.message;
+    const msg = typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
+    return { tool: name, status: 'error', data: null, error: `Request failed with status code ${err.response?.status || 'unknown'}: ${msg}` };
   }
 }
 
@@ -95,7 +96,12 @@ async function queryIPinfo(domain, ip) {
   if (!key || key === 'your_key_here') return { tool: 'IPinfo', status: 'no_key', data: null };
   const targetIP = ip || domain;
   return safeRequest('IPinfo', async () => {
-    const res = await axios.get(`https://ipinfo.io/${targetIP}?token=${key}`, { timeout: 15000 });
+    let res;
+    try {
+      res = await axios.get(`https://ipinfo.io/${targetIP}?token=${key}`, { timeout: 15000 });
+    } catch {
+      res = await axios.get(`https://ipinfo.io/${targetIP}/json?token=${key}`, { timeout: 15000 });
+    }
     return {
       ip: res.data.ip || targetIP,
       hostname: res.data.hostname || 'N/A',

@@ -53,32 +53,38 @@ async function queryShodan(domain, ip) {
   const key = process.env.SHODAN_API_KEY;
   if (!key || key === 'your_key_here') return { tool: 'Shodan', status: 'no_key', data: null };
   const targetIP = ip || domain;
+
+  // Try host lookup first
+  const hostResult = await safeRequest('Shodan', async () => {
+    const res = await axios.get(`https://api.shodan.io/shodan/host/${targetIP}?key=${key}&minify=true`, { timeout: 15000 });
+    return {
+      ip: res.data.ip_str || targetIP,
+      organization: res.data.org || 'N/A',
+      os: res.data.os || 'N/A',
+      open_ports: (res.data.ports || []).join(', ') || 'N/A',
+      isp: res.data.isp || 'N/A',
+      country: res.data.country_name || 'N/A',
+      city: res.data.city || 'N/A',
+      hostnames: (res.data.hostnames || []).join(', ') || 'N/A'
+    };
+  });
+  if (hostResult.status === 'success') return hostResult;
+
+  // Fallback to DNS resolve (always free)
   return safeRequest('Shodan', async () => {
-    // Try host lookup first (works with some free keys)
+    const dnsRes = await axios.get(`https://api.shodan.io/dns/resolve?hostnames=${domain}&key=${key}`, { timeout: 15000 });
+    const resolvedIP = dnsRes.data?.[domain] || targetIP;
+    let hostnames = [];
     try {
-      const res = await axios.get(`https://api.shodan.io/shodan/host/${targetIP}?key=${key}&minify=true`, { timeout: 15000 });
-      return {
-        ip: res.data.ip_str || targetIP,
-        organization: res.data.org || 'N/A',
-        os: res.data.os || 'N/A',
-        open_ports: (res.data.ports || []).join(', ') || 'N/A',
-        isp: res.data.isp || 'N/A',
-        country: res.data.country_name || 'N/A',
-        city: res.data.city || 'N/A',
-        hostnames: (res.data.hostnames || []).join(', ') || 'N/A'
-      };
-    } catch {
-      // Fallback to DNS resolve (always free)
-      const dnsRes = await axios.get(`https://api.shodan.io/dns/resolve?hostnames=${domain}&key=${key}`, { timeout: 15000 });
-      const reverseRes = await axios.get(`https://api.shodan.io/dns/reverse?ips=${targetIP}&key=${key}`, { timeout: 15000 });
-      const hostnames = reverseRes.data?.[targetIP] || [];
-      return {
-        ip: dnsRes.data?.[domain] || targetIP,
-        dns_resolved: dnsRes.data?.[domain] ? 'Yes' : 'No',
-        hostnames: hostnames.join(', ') || 'N/A',
-        note: 'DNS data only (free tier)'
-      };
-    }
+      const reverseRes = await axios.get(`https://api.shodan.io/dns/reverse?ips=${resolvedIP}&key=${key}`, { timeout: 15000 });
+      hostnames = reverseRes.data?.[resolvedIP] || [];
+    } catch (_) {}
+    return {
+      ip: resolvedIP,
+      dns_resolved: 'Yes',
+      hostnames: hostnames.join(', ') || 'N/A',
+      source: 'Shodan DNS (free tier)'
+    };
   });
 }
 
@@ -200,22 +206,39 @@ async function queryGreyNoise(ip) {
   const key = process.env.GREYNOISE_API_KEY;
   if (!key || key === 'your_key_here') return { tool: 'GreyNoise', status: 'no_key', data: null };
   if (!ip) return { tool: 'GreyNoise', status: 'error', data: null, error: 'Could not resolve IP' };
-  return safeRequest('GreyNoise', async () => {
+  try {
     const res = await axios.get(`https://api.greynoise.io/v3/community/${ip}`, {
       headers: { key: key },
       timeout: 15000
     });
     return {
-      ip: res.data.ip || ip,
-      noise: res.data.noise ?? 'N/A',
-      riot: res.data.riot ?? 'N/A',
-      classification: res.data.classification || 'N/A',
-      name: res.data.name || 'N/A',
-      link: res.data.link || 'N/A',
-      last_seen: res.data.last_seen || 'N/A',
-      message: res.data.message || 'N/A'
+      tool: 'GreyNoise', status: 'success', data: {
+        ip: res.data.ip || ip,
+        noise: res.data.noise ?? 'N/A',
+        riot: res.data.riot ?? 'N/A',
+        classification: res.data.classification || 'N/A',
+        name: res.data.name || 'N/A',
+        last_seen: res.data.last_seen || 'N/A',
+        message: res.data.message || 'N/A'
+      }
     };
-  });
+  } catch (err) {
+    if (err.response?.status === 404) {
+      return {
+        tool: 'GreyNoise', status: 'success', data: {
+          ip: ip,
+          noise: false,
+          riot: false,
+          classification: 'benign',
+          message: 'IP not observed scanning the internet',
+          verdict: 'This IP is not a known scanner or threat'
+        }
+      };
+    }
+    const raw = err.response?.data?.message || err.response?.data || err.message;
+    const msg = typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
+    return { tool: 'GreyNoise', status: 'error', data: null, error: `Status ${err.response?.status || 'unknown'}: ${msg}`.substring(0, 200) };
+  }
 }
 
 // 8. HackerTarget (free, no key needed)

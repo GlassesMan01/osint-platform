@@ -54,37 +54,50 @@ async function queryShodan(domain, ip) {
   if (!key || key === 'your_key_here') return { tool: 'Shodan', status: 'no_key', data: null };
   const targetIP = ip || domain;
   return safeRequest('Shodan', async () => {
-    const res = await axios.get(`https://api.shodan.io/shodan/host/${targetIP}?key=${key}`, { timeout: 15000 });
-    return {
-      ip: res.data.ip_str || targetIP,
-      organization: res.data.org || 'N/A',
-      os: res.data.os || 'N/A',
-      open_ports: (res.data.ports || []).join(', ') || 'N/A',
-      isp: res.data.isp || 'N/A',
-      country: res.data.country_name || 'N/A',
-      city: res.data.city || 'N/A',
-      vulns: (res.data.vulns || []).slice(0, 5).join(', ') || 'None found',
-      hostnames: (res.data.hostnames || []).join(', ') || 'N/A'
-    };
+    // Try host lookup first (works with some free keys)
+    try {
+      const res = await axios.get(`https://api.shodan.io/shodan/host/${targetIP}?key=${key}&minify=true`, { timeout: 15000 });
+      return {
+        ip: res.data.ip_str || targetIP,
+        organization: res.data.org || 'N/A',
+        os: res.data.os || 'N/A',
+        open_ports: (res.data.ports || []).join(', ') || 'N/A',
+        isp: res.data.isp || 'N/A',
+        country: res.data.country_name || 'N/A',
+        city: res.data.city || 'N/A',
+        hostnames: (res.data.hostnames || []).join(', ') || 'N/A'
+      };
+    } catch {
+      // Fallback to DNS resolve (always free)
+      const dnsRes = await axios.get(`https://api.shodan.io/dns/resolve?hostnames=${domain}&key=${key}`, { timeout: 15000 });
+      const reverseRes = await axios.get(`https://api.shodan.io/dns/reverse?ips=${targetIP}&key=${key}`, { timeout: 15000 });
+      const hostnames = reverseRes.data?.[targetIP] || [];
+      return {
+        ip: dnsRes.data?.[domain] || targetIP,
+        dns_resolved: dnsRes.data?.[domain] ? 'Yes' : 'No',
+        hostnames: hostnames.join(', ') || 'N/A',
+        note: 'DNS data only (free tier)'
+      };
+    }
   });
 }
 
-// 3. IPinfo
+// 3. IPinfo (lite endpoint)
 async function queryIPinfo(domain, ip) {
   const key = process.env.IPINFO_API_KEY;
   if (!key || key === 'your_key_here') return { tool: 'IPinfo', status: 'no_key', data: null };
-  const targetIP = ip || domain;
+  if (!ip) return { tool: 'IPinfo', status: 'error', data: null, error: 'Could not resolve IP' };
   return safeRequest('IPinfo', async () => {
-    const res = await axios.get(`https://ipinfo.io/${targetIP}/json?token=${key}`, { timeout: 15000 });
+    const res = await axios.get(`https://api.ipinfo.io/lite/${ip}?token=${key}`, { timeout: 15000 });
+    const d = res.data || {};
     return {
-      ip: res.data.ip || targetIP,
-      hostname: res.data.hostname || 'N/A',
-      city: res.data.city || 'N/A',
-      region: res.data.region || 'N/A',
-      country: res.data.country || 'N/A',
-      location: res.data.loc || 'N/A',
-      organization: res.data.org || 'N/A',
-      timezone: res.data.timezone || 'N/A'
+      ip: d.ip || ip,
+      asn: d.asn || 'N/A',
+      as_name: d.as_name || 'N/A',
+      as_domain: d.as_domain || 'N/A',
+      country: d.country || d.country_code || 'N/A',
+      continent: d.continent || 'N/A',
+      continent_code: d.continent_code || 'N/A'
     };
   });
 }
@@ -205,28 +218,27 @@ async function queryGreyNoise(ip) {
   });
 }
 
-// 8. Censys
-async function queryCensys(ip) {
-  const key = process.env.CENSYS_API_KEY;
-  if (!key || key === 'your_key_here') return { tool: 'Censys', status: 'no_key', data: null };
-  if (!ip) return { tool: 'Censys', status: 'error', data: null, error: 'Could not resolve IP' };
-  return safeRequest('Censys', async () => {
-    const res = await axios.get(`https://search.censys.io/api/v2/hosts/${ip}`, {
-      headers: { Authorization: `Bearer ${key}` },
-      timeout: 15000
-    });
-    const host = res.data.result || {};
-    const services = host.services || [];
+// 8. HackerTarget (free, no key needed)
+async function queryHackerTarget(domain) {
+  return safeRequest('HackerTarget', async () => {
+    const [headersRes, dnsRes] = await Promise.all([
+      axios.get(`https://api.hackertarget.com/httpheaders/?q=${domain}`, { timeout: 15000 }),
+      axios.get(`https://api.hackertarget.com/dnslookup/?q=${domain}`, { timeout: 15000 })
+    ]);
+    const headers = headersRes.data || '';
+    const dnsData = dnsRes.data || '';
+    const headerLines = headers.split('\n').filter(l => l.includes(':'));
+    const serverHeader = headerLines.find(l => l.toLowerCase().startsWith('server:'));
+    const contentType = headerLines.find(l => l.toLowerCase().startsWith('content-type:'));
+    const xPoweredBy = headerLines.find(l => l.toLowerCase().startsWith('x-powered-by:'));
+    const strictTransport = headerLines.find(l => l.toLowerCase().includes('strict-transport'));
     return {
-      ip: host.ip || ip,
-      country: host.location?.country || 'N/A',
-      city: host.location?.city || 'N/A',
-      asn: host.autonomous_system?.asn || 'N/A',
-      as_name: host.autonomous_system?.name || 'N/A',
-      as_description: host.autonomous_system?.description || 'N/A',
-      open_services: services.map(s => `${s.port}/${s.transport_protocol} (${s.service_name || 'unknown'})`).join(', ') || 'N/A',
-      os: host.operating_system?.product || 'N/A',
-      last_updated: host.last_updated_at || 'N/A'
+      server: serverHeader ? serverHeader.split(':').slice(1).join(':').trim() : 'N/A',
+      content_type: contentType ? contentType.split(':').slice(1).join(':').trim() : 'N/A',
+      powered_by: xPoweredBy ? xPoweredBy.split(':').slice(1).join(':').trim() : 'N/A',
+      hsts: strictTransport ? 'Yes' : 'No',
+      total_headers: headerLines.length,
+      dns_records: dnsData.substring(0, 500) || 'N/A'
     };
   });
 }
@@ -282,20 +294,25 @@ async function queryDNSdumpster(domain) {
   });
 }
 
-// 11. Cloudflare Radar (no key needed)
-async function queryCloudflareRadar(domain) {
-  return safeRequest('Cloudflare Radar', async () => {
-    const res = await axios.get(`https://radar.cloudflare.com/api/domains/${domain}`, { timeout: 15000 });
+// 11. ipapi.co (free, no key needed)
+async function queryIPAPI(ip) {
+  if (!ip) return { tool: 'ipapi.co', status: 'error', data: null, error: 'Could not resolve IP' };
+  return safeRequest('ipapi.co', async () => {
+    const res = await axios.get(`https://ipapi.co/${ip}/json/`, { timeout: 15000 });
     const d = res.data || {};
     return {
-      domain: domain,
-      top_rank: d.rank || 'N/A',
-      category: d.contentCategories?.join(', ') || 'N/A',
-      popularity_rank: d.popularityRank || 'N/A',
-      risk_score: d.riskScore || 'N/A',
-      risk_types: (d.riskTypes || []).join(', ') || 'None',
-      is_probably_safe: d.isProbablySafe ?? 'N/A',
-      content_categories: (d.contentCategories || []).join(', ') || 'N/A'
+      ip: d.ip || ip,
+      city: d.city || 'N/A',
+      region: d.region || 'N/A',
+      country: d.country_name || 'N/A',
+      postal: d.postal || 'N/A',
+      latitude: d.latitude || 'N/A',
+      longitude: d.longitude || 'N/A',
+      timezone: d.timezone || 'N/A',
+      asn: d.asn || 'N/A',
+      org: d.org || 'N/A',
+      isp: d.org || 'N/A',
+      country_code: d.country_code || 'N/A'
     };
   });
 }
@@ -362,10 +379,10 @@ async function analyzeTarget(target) {
     queryURLScan(domain),
     queryAlienVault(domain),
     queryGreyNoise(ip),
-    queryCensys(ip),
+    queryHackerTarget(domain),
     queryViewDNS(domain),
     queryDNSdumpster(domain),
-    queryCloudflareRadar(domain),
+    queryIPAPI(ip),
     queryLeakIX(ip),
     queryPulsedive(domain)
   ]);

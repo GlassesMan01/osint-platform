@@ -21,10 +21,10 @@ A web-based Open Source Intelligence (OSINT) platform that analyzes target websi
 | 5 | **URLScan.io** | Website scanning & technology detection | 100 scans/day |
 | 6 | **AlienVault OTX** | Threat intelligence & pulse data | Unlimited |
 | 7 | **GreyNoise** | Internet noise & scanner detection | 100 requests/day |
-| 8 | **Censys** | Host & certificate intelligence | 250 queries/month |
+| 8 | **HackerTarget** | HTTP headers & DNS lookup | 100 queries/day |
 | 9 | **ViewDNS** | DNS records & IP history | 250 queries/day |
 | 10 | **DNSdumpster** | DNS reconnaissance & mapping | Free |
-| 11 | **Cloudflare Radar** | Domain popularity & categorization | Free (public API) |
+| 11 | **ipapi.co** | IP geolocation & network data | Free (no key needed) |
 | 12 | **LeakIX** | Exposed services & leak detection | Free |
 | 13 | **Pulsedive** | Threat intelligence & indicators | Free |
 
@@ -71,7 +71,7 @@ Sign up for free API keys at:
 - URLScan.io: https://urlscan.io/user/signup
 - AlienVault OTX: https://otx.alienvault.com/
 - GreyNoise: https://www.greynoise.io/
-- Censys: https://search.censys.io/register
+- HackerTarget: https://hackertarget.com/ (no key needed)
 - ViewDNS: https://viewdns.info/api/
 - DNSdumpster: https://dnsdumpster.com/
 - LeakIX: https://leakix.net/
